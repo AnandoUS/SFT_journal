@@ -1,5 +1,5 @@
 """
-QLoRA Pipeline (4-bit NF4 Quantization + rsLoRA / DoRA Adapters):
+Quantized LoRA (QLoRA) Pipeline (4-bit NF4 Quantization + rsLoRA / DoRA Adapters):
 Quantizes the frozen base model to 4-bit NormalFloat (NF4) via `bitsandbytes` and attaches
 trainable LoRA adapters across all linear layers. Reuses `load_materials_sft_dataset` from Phase 2.
 """
