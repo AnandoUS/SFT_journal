@@ -1,7 +1,8 @@
 """
-Quantized LoRA (QLoRA) Pipeline (4-bit NF4 Quantization + rsLoRA / DoRA Adapters):
+QLoRA Pipeline (4-bit NF4 Quantization + rsLoRA / DoRA Adapters):
 Quantizes the frozen base model to 4-bit NormalFloat (NF4) via `bitsandbytes` and attaches
-trainable LoRA adapters across all linear layers. Reuses `load_materials_sft_dataset` from Phase 2.
+trainable LoRA adapters across all linear layers. Consumes Conversational `messages` datasets
+directly from `load_materials_sft_dataset` in Phase 2.
 """
 
 import sys
@@ -15,7 +16,11 @@ from trl import SFTConfig, SFTTrainer
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT / "02_naive_sft"))
 
-from run_sft_trainer import DEFAULT_MODEL_ID, load_materials_sft_dataset  # noqa: E402
+from run_sft_trainer import (  # noqa: E402
+    DEFAULT_CHATML_TEMPLATE,
+    DEFAULT_MODEL_ID,
+    load_materials_sft_dataset,
+)
 
 
 def load_4bit_qlora_model(
@@ -28,11 +33,14 @@ def load_4bit_qlora_model(
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.chat_template is None:
+        tokenizer.chat_template = DEFAULT_CHATML_TEMPLATE
     tokenizer.padding_side = "right"
 
     if torch.cuda.is_available():
         # MOTIVATION: We want to compress the frozen base model's weights from 16-bit numbers down to 4-bit numbers because storing a full 16-bit model takes four times as much GPU Video RAM (VRAM).
         # Using the `"nf4"` (4-bit NormalFloat) format stores weights compactly in 4 bits and unpacks them into 16-bit numbers (`bfloat16`) only for the split second when a layer is doing math. In jargon, compressing weights to 4-bit precision while training LoRA adapters on top is called "QLoRA" (Quantized LoRA), and compressing the compression scales themselves is called "double quantization".
+        # CONTEXT ON INNER WORKINGS: Most weights in a trained neural network cluster tightly around zero in a bell-curve shape, so `"nf4"` places more of its 16 possible 4-bit rounding values near zero where accuracy matters most. During math steps, only one small chunk of weights at a time is unpacked to 16-bit inside the GPU's fast on-chip memory, so the full 16-bit model never sits in main GPU memory. In hardware jargon, that fast on-chip memory is called "SRAM", and unpacking weights only during math is called "on-the-fly dequantization".
         # This allows us to fine-tune models in Phases 3, 4, and 5 on a single GPU that would otherwise require an expensive multi-GPU server.
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -68,6 +76,7 @@ def load_4bit_qlora_model(
         target_modules="all-linear",
         # MOTIVATION: When we increase the LoRA bottleneck size `r` to give the adapter more capacity, standard LoRA divides updates by `r`, which makes updates too tiny and causes learning to stall.
         # Turning on `use_rslora=True` divides by the square root of `r` (`alpha / sqrt(r)`) instead, keeping update sizes healthy even at larger ranks. In jargon, this is called "Rank-Stabilized LoRA (rsLoRA)", while `use_dora` enables "Weight-Decomposed LoRA (DoRA)".
+        # CONTEXT ON INNER WORKINGS: When `B @ A` multiplies across a wider bottleneck `r`, it adds `r` numbers together for every output. By basic statistics, adding `r` random numbers together makes their typical spread grow by the square root of `r` (`sqrt(r)`), not by `r`—so dividing by `sqrt(r)` keeps the adapter's output strength steady as `r` grows.
         # We can freely increase `r` (e.g., from 8 to 32 or 64) for harder tasks later without having to re-tune our learning rate from scratch.
         use_rslora=True,
         use_dora=False,
@@ -84,7 +93,6 @@ def run_qlora_sft(output_dir: str = "./outputs/qlora_sft", max_steps: int = 20):
     train_ds = load_materials_sft_dataset(split="train[:200]")
     config = SFTConfig(
         output_dir=output_dir,
-        dataset_text_field="text",
         max_seq_length=512,
         per_device_train_batch_size=4,
         gradient_accumulation_steps=4,
