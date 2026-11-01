@@ -28,6 +28,7 @@ def load_4bit_qlora_model(
     r: int = 16,
     lora_alpha: int = 32,
     add_domain_tokens: bool = False,
+    adapter_name: str = "default",
 ):
     """Load a 4-bit NF4 quantized base model and attach Rank-Stabilized LoRA adapters."""
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -82,7 +83,7 @@ def load_4bit_qlora_model(
         use_dora=False,
         modules_to_save=extra_modules,
     )
-    model = get_peft_model(model, lora_config)
+    model = get_peft_model(model, lora_config, adapter_name=adapter_name)
     return model, tokenizer
 
 
